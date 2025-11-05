@@ -1,0 +1,6 @@
+@MarketScraper_HostAddress = http://localhost:5105
+
+GET {{MarketScraper_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

@@ -1,0 +1,10 @@
+F:\React Project\backend-publish\MarketScraper.exe
+F:\React Project\backend-publish\appsettings.Development.json
+F:\React Project\backend-publish\appsettings.json
+F:\React Project\backend-publish\MarketScraper.dll
+F:\React Project\backend-publish\MarketScraper.deps.json
+F:\React Project\backend-publish\MarketScraper.runtimeconfig.json
+F:\React Project\backend-publish\MarketScraper.pdb
+F:\React Project\backend-publish\HtmlAgilityPack.dll
+F:\React Project\backend-publish\Microsoft.AspNetCore.OpenApi.dll
+F:\React Project\backend-publish\Microsoft.OpenApi.dll
