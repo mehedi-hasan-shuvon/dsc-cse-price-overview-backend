@@ -27,3 +27,4 @@ F:\React Project\MarketScraper\obj\Debug\net9.0\refint\MarketScraper.dll
 F:\React Project\MarketScraper\obj\Debug\net9.0\MarketScraper.pdb
 F:\React Project\MarketScraper\obj\Debug\net9.0\MarketScraper.genruntimeconfig.cache
 F:\React Project\MarketScraper\obj\Debug\net9.0\ref\MarketScraper.dll
+F:\React Project\MarketScraper\obj\Debug\net9.0\MarketScraper.sourcelink.json
