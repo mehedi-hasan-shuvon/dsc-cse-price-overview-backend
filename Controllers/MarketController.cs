@@ -15,101 +15,101 @@ namespace MarketScraper.Controllers
         }
 
 
-[HttpGet("dse-table")]
-public async Task<IActionResult> GetDseTable()
-{
-    try
-    {
-        string url1 = "https://www.dsebd.org/ltp_industry.php?area=88";
-        string url2 = "https://www.dsebd.org/latest_share_price_scroll_l.php";
-
-        var allRows = new List<List<string>>();
-        var headers = new List<string> { "Serial", "TRADING CODE", "HIGH", "LOW", "CLOSEP*" };
-        int serialCounter = 1;
-
-        // Function to fetch table + header text
-        async Task<(string headerText, List<List<string>> rows)> FetchTableAsync(string url)
+        [HttpGet("dse-table")]
+        public async Task<IActionResult> GetDseTable()
         {
-            var response = await _httpClient.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-
-            var html = await response.Content.ReadAsStringAsync();
-            var doc = new HtmlAgilityPack.HtmlDocument();
-            doc.LoadHtml(html);
-
-            var table = doc.DocumentNode.SelectSingleNode("//table[contains(@class,'shares-table')]");
-            if (table == null)
-                return ("", new List<List<string>>());
-
-            // Extract header text
-            var h2Node = doc.DocumentNode.SelectSingleNode("//h2[contains(@class,'BodyHead') and contains(@class,'topBodyHead')]");
-            string headerText = "";
-            if (h2Node != null)
+            try
             {
-                headerText = System.Text.RegularExpressions.Regex.Replace(h2Node.InnerText, @"\s+", " ").Trim();
-            }
+                string url1 = "https://www.dsebd.org/ltp_industry.php?area=88";
+                string url2 = "https://www.dsebd.org/latest_share_price_scroll_l.php";
 
-            // Identify columns
-            var tableHeaders = table.SelectSingleNode(".//tr").SelectNodes("th|td")
-                                    .Select(x => x.InnerText.Trim())
+                var allRows = new List<List<string>>();
+                var headers = new List<string> { "Serial", "TRADING CODE", "HIGH", "LOW", "CLOSEP*" };
+                int serialCounter = 1;
+
+                // Function to fetch table + header text
+                async Task<(string headerText, List<List<string>> rows)> FetchTableAsync(string url)
+                {
+                    var response = await _httpClient.GetAsync(url);
+                    response.EnsureSuccessStatusCode();
+
+                    var html = await response.Content.ReadAsStringAsync();
+                    var doc = new HtmlAgilityPack.HtmlDocument();
+                    doc.LoadHtml(html);
+
+                    var table = doc.DocumentNode.SelectSingleNode("//table[contains(@class,'shares-table')]");
+                    if (table == null)
+                        return ("", new List<List<string>>());
+
+                    // Extract header text
+                    var h2Node = doc.DocumentNode.SelectSingleNode("//h2[contains(@class,'BodyHead') and contains(@class,'topBodyHead')]");
+                    string headerText = "";
+                    if (h2Node != null)
+                    {
+                        headerText = System.Text.RegularExpressions.Regex.Replace(h2Node.InnerText, @"\s+", " ").Trim();
+                    }
+
+                    // Identify columns
+                    var tableHeaders = table.SelectSingleNode(".//tr").SelectNodes("th|td")
+                                            .Select(x => x.InnerText.Trim())
+                                            .ToList();
+
+                    var requiredColumns = new[] { "TRADING CODE", "HIGH", "LOW", "CLOSEP*" };
+                    var columnIndexes = requiredColumns
+                                        .Select(h => tableHeaders.FindIndex(th => th.Equals(h, StringComparison.OrdinalIgnoreCase)))
+                                        .ToArray();
+
+                    // Extract rows
+                    var rows = table.SelectNodes(".//tr").Skip(1)
+                                    .Select(tr =>
+                                    {
+                                        var tds = tr.SelectNodes("td")?.ToList();
+                                        if (tds == null) return null;
+
+                                        var row = new List<string> { serialCounter.ToString() };
+                                        foreach (var idx in columnIndexes)
+                                        {
+                                            if (idx >= 0 && idx < tds.Count)
+                                                row.Add(tds[idx].InnerText.Trim());
+                                            else
+                                                row.Add("");
+                                        }
+                                        serialCounter++;
+                                        return row;
+                                    })
+                                    .Where(r => r != null)
                                     .ToList();
 
-            var requiredColumns = new[] { "TRADING CODE", "HIGH", "LOW", "CLOSEP*" };
-            var columnIndexes = requiredColumns
-                                .Select(h => tableHeaders.FindIndex(th => th.Equals(h, StringComparison.OrdinalIgnoreCase)))
-                                .ToArray();
+                    return (headerText, rows);
+                }
 
-            // Extract rows
-            var rows = table.SelectNodes(".//tr").Skip(1)
-                            .Select(tr =>
-                            {
-                                var tds = tr.SelectNodes("td")?.ToList();
-                                if (tds == null) return null;
+                // Fetch both
+                var (headerText1, rows1) = await FetchTableAsync(url1);
+                var (headerText2, rows2) = await FetchTableAsync(url2);
 
-                                var row = new List<string> { serialCounter.ToString() };
-                                foreach (var idx in columnIndexes)
-                                {
-                                    if (idx >= 0 && idx < tds.Count)
-                                        row.Add(tds[idx].InnerText.Trim());
-                                    else
-                                        row.Add("");
-                                }
-                                serialCounter++;
-                                return row;
-                            })
-                            .Where(r => r != null)
-                            .ToList();
+                // Combine rows
+                allRows.AddRange(rows1);
+                allRows.AddRange(rows2);
 
-            return (headerText, rows);
+                if (allRows.Count == 0)
+                    return NotFound("No DSE data found");
+
+                // ✅ Final output format
+                var result = new
+                {
+                    headerText1,
+                    headerText2,
+                    headers,
+                    rows = allRows
+                };
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
-
-        // Fetch both
-        var (headerText1, rows1) = await FetchTableAsync(url1);
-        var (headerText2, rows2) = await FetchTableAsync(url2);
-
-        // Combine rows
-        allRows.AddRange(rows1);
-        allRows.AddRange(rows2);
-
-        if (allRows.Count == 0)
-            return NotFound("No DSE data found");
-
-        // ✅ Final output format
-        var result = new
-        {
-            headerText1,
-            headerText2,
-            headers,
-            rows = allRows
-        };
-
-        return Ok(result);
-    }
-    catch (Exception ex)
-    {
-        return StatusCode(500, new { error = ex.Message });
-    }
-}
 
 
 
@@ -264,6 +264,97 @@ public async Task<IActionResult> GetDseTable()
             }
         }
 
+
+        [HttpGet("dse-trading-codes")]
+        public async Task<IActionResult> GetDseTradingCodes()
+        {
+            try
+            {
+                string url = "https://www.dsebd.org/ltp_industry.php?area=88";
+
+                var response = await _httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                var html = await response.Content.ReadAsStringAsync();
+                var doc = new HtmlAgilityPack.HtmlDocument();
+                doc.LoadHtml(html);
+
+                // Find the table
+                var table = doc.DocumentNode.SelectSingleNode("//table[contains(@class,'shares-table')]");
+                if (table == null)
+                    return NotFound("No table found on DSE page");
+
+                // Get table headers
+                var tableHeaders = table.SelectSingleNode(".//tr").SelectNodes("th|td")
+                                        .Select(x => x.InnerText.Trim())
+                                        .ToList();
+
+                int tradingCodeIndex = tableHeaders.FindIndex(h => h.Equals("TRADING CODE", StringComparison.OrdinalIgnoreCase));
+                if (tradingCodeIndex == -1)
+                    return NotFound("TRADING CODE column not found");
+
+                // Extract trading codes
+                var tradingCodes = table.SelectNodes(".//tr").Skip(1)
+                                        .Select(tr =>
+                                        {
+                                            var tds = tr.SelectNodes("td");
+                                            if (tds == null || tradingCodeIndex >= tds.Count) return null;
+                                            return tds[tradingCodeIndex].InnerText.Trim();
+                                        })
+                                        .Where(tc => !string.IsNullOrEmpty(tc))
+                                        .ToList();
+
+                return Ok(tradingCodes);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        [HttpGet("cse-bond-codes")]
+        public async Task<IActionResult> GetCseBondCodes()
+        {
+            try
+            {
+                string url = "https://www.cse.com.bd/market/bond_current_price";
+                var response = await _httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                var html = await response.Content.ReadAsStringAsync();
+                var doc = new HtmlAgilityPack.HtmlDocument();
+                doc.LoadHtml(html);
+
+                // Find the table by ID
+                var table = doc.DocumentNode.SelectSingleNode("//table[@id='TABLE_2']");
+                if (table == null) return NotFound("CSE Table not found");
+
+                // Get headers to identify Stock Code column
+                var headers = table.SelectNodes(".//thead/tr/th")
+                                   .Select(th => th.InnerText.Trim())
+                                   .ToList();
+
+                int stockCodeIndex = headers.FindIndex(h => h.Equals("Stock Code", StringComparison.OrdinalIgnoreCase));
+                if (stockCodeIndex == -1) return NotFound("Stock Code column not found");
+
+                // Extract stock codes
+                var stockCodes = table.SelectNodes(".//tbody/tr")
+                                      .Select(tr =>
+                                      {
+                                          var tds = tr.SelectNodes("td");
+                                          if (tds == null || stockCodeIndex >= tds.Count) return null;
+                                          return tds[stockCodeIndex].InnerText.Trim();
+                                      })
+                                      .Where(code => !string.IsNullOrEmpty(code))
+                                      .ToList();
+
+                return Ok(stockCodes);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
 
 
 
