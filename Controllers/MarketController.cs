@@ -187,29 +187,69 @@ namespace MarketScraper.Controllers
             }
         }
 
+        [HttpGet("cse-sme-price")]
+        public async Task<IActionResult> GetCseSMEPrice()
+        {
+            try
+            {
+                string url = "https://www.cse.com.bd/market/sme_current_price";
+                var response = await _httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                var html = await response.Content.ReadAsStringAsync();
+                var doc = new HtmlAgilityPack.HtmlDocument();
+                doc.LoadHtml(html);
+
+                // SME table ID is TABLE_2, not dataTable
+                var table = doc.DocumentNode.SelectSingleNode("//table[@id='TABLE_2']");
+                if (table == null)
+                    return NotFound("CSE SME Market Price table not found");
+
+                var headers = table.SelectNodes(".//thead/tr/th")
+                    ?.Select(th => th.InnerText.Trim())
+                    .ToList();
+
+                var rows = table.SelectNodes(".//tbody/tr")
+                    ?.Select(tr =>
+                        tr.SelectNodes("td")
+                          .Select(td => td.InnerText.Trim())
+                          .ToList()
+                    )
+                    .Where(r => r.Count > 0)
+                    .ToList();
+
+                return Ok(new { headers, rows });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+
         [HttpGet("cse-merged")]
         public async Task<IActionResult> GetCseMergedAsync()
         {
             try
             {
-                // Step 1: Call both endpoints internally
-                var currentPriceResponse = await GetCseCurrentPrice() as OkObjectResult;
+                var currentPriceResponse = await GetCseClosePrice() as OkObjectResult;
                 var bondResponse = await GetCseBonds() as OkObjectResult;
+                var smeResponse = await GetCseSMEPrice() as OkObjectResult;
 
-                if (currentPriceResponse == null && bondResponse == null)
+                if (currentPriceResponse == null && bondResponse == null && smeResponse == null)
                     return NotFound("No data found from CSE sources.");
 
                 var allRows = new List<List<string>>();
                 var headers = new List<string> { "SL", "STOCK CODE", "HIGH", "LOW", "CP" };
                 int sl = 1;
 
-                // Helper function to filter rows
                 List<List<string>> FilterColumns(dynamic data)
                 {
                     var filteredRows = new List<List<string>>();
-                    var headerList = ((IEnumerable<object>)data.headers).Select(h => h.ToString().Trim().ToUpper()).ToList();
+                    var headerList = ((IEnumerable<object>)data.headers)
+                                        .Select(h => h.ToString().Trim().ToUpper())
+                                        .ToList();
 
-                    // Find indexes of required columns
                     int stockCodeIndex = headerList.FindIndex(h => h.Contains("STOCK CODE"));
                     int highIndex = headerList.FindIndex(h => h == "HIGH");
                     int lowIndex = headerList.FindIndex(h => h == "LOW");
@@ -219,9 +259,6 @@ namespace MarketScraper.Controllers
                     {
                         var row = ((IEnumerable<object>)rowObj).Select(r => r.ToString().Trim()).ToList();
                         if (row.Count == 0) continue;
-
-                        // Skip rows missing key data
-                        if (stockCodeIndex < 0 || stockCodeIndex >= row.Count) continue;
 
                         var newRow = new List<string>
                 {
@@ -239,7 +276,6 @@ namespace MarketScraper.Controllers
                     return filteredRows;
                 }
 
-                // Step 2: Merge both tables
                 if (currentPriceResponse?.Value != null)
                 {
                     dynamic data = currentPriceResponse.Value;
@@ -252,7 +288,12 @@ namespace MarketScraper.Controllers
                     allRows.AddRange(FilterColumns(data));
                 }
 
-                // Step 3: Return merged result
+                if (smeResponse?.Value != null)
+                {
+                    dynamic data = smeResponse.Value;
+                    allRows.AddRange(FilterColumns(data));
+                }
+
                 if (allRows.Count == 0)
                     return NotFound("No CSE data found.");
 
@@ -263,6 +304,7 @@ namespace MarketScraper.Controllers
                 return StatusCode(500, new { error = ex.Message });
             }
         }
+
 
 
         [HttpGet("dse-trading-codes")]
@@ -355,6 +397,178 @@ namespace MarketScraper.Controllers
                 return StatusCode(500, new { error = ex.Message });
             }
         }
+
+        [HttpGet("dse-close-price")]
+        public async Task<IActionResult> GetDseClosePrice()
+        {
+            try
+            {
+                var headers = new List<string> { "SL", "TRADING CODE", "HIGH", "LOW", "CLOSEP*" };
+                var mergedRows = new List<List<string>>();
+                int serial = 1;
+
+                // ----- MAIN MARKET -----
+                serial = await ExtractDseData("https://www.dsebd.org/dse_close_price.php", mergedRows, serial);
+
+                // ----- SME MARKET -----
+                serial = await ExtractDseData("https://sme.dsebd.org/sme_dse_close_price.php", mergedRows, serial);
+
+                return Ok(new { headers, rows = mergedRows });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+
+        [HttpGet("dse-close-price-codes")]
+        public async Task<IActionResult> GetDseClosePriceCodes()
+        {
+            try
+            {
+                // Call the existing method
+                var result = await GetDseClosePrice() as OkObjectResult;
+                if (result?.Value == null)
+                    return NotFound("No data found from DSE Close Price.");
+
+                // Extract the result object
+                dynamic data = result.Value;
+
+                // mergedRows = List<List<string>>
+                var rows = (IEnumerable<object>)data.rows;
+
+                var tradingCodes = new List<string>();
+
+                foreach (var rowObj in rows)
+                {
+                    var row = ((IEnumerable<object>)rowObj).Select(x => x.ToString()).ToList();
+
+                    // row structure = SL, TRADING CODE, HIGH, LOW, CLOSEP*
+                    if (row.Count > 1)
+                    {
+                        tradingCodes.Add(row[1]);  // TRADING CODE = index 1
+                    }
+                }
+
+                return Ok(tradingCodes);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+
+        /// <summary>
+        /// Extracts DSE/SME table data (2nd table) and appends to final row list.
+        /// Returns the updated serial number.
+        /// </summary>
+        private async Task<int> ExtractDseData(string url, List<List<string>> rows, int startingSerial)
+        {
+            var response = await _httpClient.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+
+            var html = await response.Content.ReadAsStringAsync();
+            var doc = new HtmlAgilityPack.HtmlDocument();
+            doc.LoadHtml(html);
+
+            // Select the 2nd table
+            var tables = doc.DocumentNode.SelectNodes("//table[contains(@class,'shares-table')]");
+            if (tables == null || tables.Count < 2)
+                return startingSerial;
+
+            var table = tables[1];
+
+            // Extract header row
+            var headerRow = table.SelectSingleNode(".//tr");
+            var headerColumns = headerRow.SelectNodes("th|td")
+                                         .Select(h => h.InnerText.Trim().ToUpper())
+                                         .ToList();
+
+            // Extract column indexes
+            int tradingCodeIndex = headerColumns.FindIndex(h => h.Contains("TRADING"));
+            int closeIndex = headerColumns.FindIndex(h => h.Contains("CLOSEP"));
+
+            if (tradingCodeIndex < 0) tradingCodeIndex = 1;
+            if (closeIndex < 0) closeIndex = 2;
+
+            // Extract table rows
+            var trNodes = table.SelectNodes(".//tr").Skip(1);
+            if (trNodes == null) return startingSerial;
+
+            int serial = startingSerial;
+            foreach (var tr in trNodes)
+            {
+                var tds = tr.SelectNodes("td");
+                if (tds == null || tds.Count == 0)
+                    continue;
+
+                string tradingCode = tds[tradingCodeIndex].InnerText.Trim();
+                string closep = tds[closeIndex].InnerText.Trim().Replace(",", "");
+
+                rows.Add(new List<string>
+        {
+            serial.ToString(),
+            tradingCode,
+            "0", // HIGH
+            "0", // LOW
+            closep
+        });
+
+                serial++;
+            }
+
+            return serial;
+        }
+
+
+
+        [HttpGet("cse-close-price")]
+        public async Task<IActionResult> GetCseClosePrice()
+        {
+            try
+            {
+                string url = "https://www.cse.com.bd/market/close_price";
+
+                var response = await _httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                var html = await response.Content.ReadAsStringAsync();
+                var doc = new HtmlAgilityPack.HtmlDocument();
+                doc.LoadHtml(html);
+
+                var rows = new List<List<string>>();
+                var headers = new List<string> { "SL", "STOCK CODE", "HIGH", "LOW", "CP" };
+
+                var rowDivs = doc.DocumentNode.SelectNodes("//div[contains(@class,'close_tabs_cont')]");
+                if (rowDivs == null)
+                    return NotFound("No CSE close price data found");
+
+                foreach (var rowDiv in rowDivs)
+                {
+                    string sl = rowDiv.SelectSingleNode(".//div[@id='close_tab_1']")?.InnerText.Trim().Replace(",", "") ?? "";
+                    string stockCode = rowDiv.SelectSingleNode(".//div[@id='close_tab_2']")?.InnerText.Trim() ?? "";
+                    string cp = rowDiv.SelectSingleNode(".//div[@id='close_tab_4']")?.InnerText.Trim().Replace(",", "") ?? "";
+
+                    rows.Add(new List<string>
+            {
+                sl,
+                stockCode,
+                "0", // HIGH
+                "0", // LOW
+                cp
+            });
+                }
+
+                return Ok(new { headers, rows });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
 
 
 
