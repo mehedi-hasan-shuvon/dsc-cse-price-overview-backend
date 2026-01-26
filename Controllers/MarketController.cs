@@ -226,6 +226,45 @@ namespace MarketScraper.Controllers
             }
         }
 
+        [HttpGet("cse-atb-price")]
+        public async Task<IActionResult> GetCseATBPrice()
+        {
+            try
+            {
+                string url = "https://www.cse.com.bd/market/atb_current_price";
+                var response = await _httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                var html = await response.Content.ReadAsStringAsync();
+                var doc = new HtmlAgilityPack.HtmlDocument();
+                doc.LoadHtml(html);
+
+                // ATB table ID is also TABLE_2
+                var table = doc.DocumentNode.SelectSingleNode("//table[@id='TABLE_2']");
+                if (table == null)
+                    return NotFound("CSE ATB Market Price table not found");
+
+                var headers = table.SelectNodes(".//thead/tr/th")
+                    ?.Select(th => th.InnerText.Trim())
+                    .ToList();
+
+                var rows = table.SelectNodes(".//tbody/tr")
+                    ?.Select(tr =>
+                        tr.SelectNodes("td")
+                        ?.Select(td => td.InnerText.Trim())
+                        .ToList()
+                    )
+                    .Where(r => r != null && r.Count > 0)
+                    .ToList();
+
+                return Ok(new { headers, rows });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
 
         [HttpGet("cse-merged")]
         public async Task<IActionResult> GetCseMergedAsync()
@@ -235,8 +274,9 @@ namespace MarketScraper.Controllers
                 var currentPriceResponse = await GetCseClosePrice() as OkObjectResult;
                 var bondResponse = await GetCseBonds() as OkObjectResult;
                 var smeResponse = await GetCseSMEPrice() as OkObjectResult;
+                var atbResponse = await GetCseATBPrice() as OkObjectResult;
 
-                if (currentPriceResponse == null && bondResponse == null && smeResponse == null)
+                if (currentPriceResponse == null && bondResponse == null && smeResponse == null && atbResponse == null)
                     return NotFound("No data found from CSE sources.");
 
                 var allRows = new List<List<string>>();
@@ -291,6 +331,12 @@ namespace MarketScraper.Controllers
                 if (smeResponse?.Value != null)
                 {
                     dynamic data = smeResponse.Value;
+                    allRows.AddRange(FilterColumns(data));
+                }
+
+                if (atbResponse?.Value != null)
+                {
+                    dynamic data = atbResponse.Value;
                     allRows.AddRange(FilterColumns(data));
                 }
 
@@ -413,6 +459,9 @@ namespace MarketScraper.Controllers
                 // ----- SME MARKET -----
                 serial = await ExtractDseData("https://sme.dsebd.org/sme_dse_close_price.php", mergedRows, serial);
 
+                 // ATB MARKET
+                 serial = await ExtractDseData("https://atb.dsebd.org/atb_close_price.php", mergedRows, serial);
+
                 return Ok(new { headers, rows = mergedRows });
             }
             catch (Exception ex)
@@ -521,8 +570,6 @@ namespace MarketScraper.Controllers
 
             return serial;
         }
-
-
 
         [HttpGet("cse-close-price")]
         public async Task<IActionResult> GetCseClosePrice()
