@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MarketScraper")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+89848c5309941500bae0d83d7bd827f2bb10b90b")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4094b3a7be87c9dd33c7c97c73717ef842c681cb")]
 [assembly: System.Reflection.AssemblyProductAttribute("MarketScraper")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MarketScraper")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
