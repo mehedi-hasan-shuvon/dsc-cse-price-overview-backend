@@ -1,6 +1,13 @@
 using HtmlAgilityPack;
 using Microsoft.AspNetCore.Mvc;
 
+
+public class DateMismatchException : Exception
+{
+    public DateMismatchException(string message) : base(message) { }
+}
+
+
 namespace MarketScraper.Controllers
 {
     [ApiController]
@@ -266,90 +273,93 @@ namespace MarketScraper.Controllers
         }
 
 
-        [HttpGet("cse-merged")]
-        public async Task<IActionResult> GetCseMergedAsync()
+ [HttpGet("cse-merged")]
+    public async Task<IActionResult> GetCseMergedAsync()
+    {
+        try
         {
-            try
+            IActionResult currentPriceResponse = await GetCseClosePrice();
+            IActionResult bondResponse = await GetCseBonds();
+            IActionResult smeResponse = await GetCseSMEPrice();
+            IActionResult atbResponse = await GetCseATBPrice();
+
+            // Handle date mismatch or any BadRequest from sources
+            if (currentPriceResponse is BadRequestObjectResult badCurrent)
+                return BadRequest(badCurrent.Value?.ToString());
+            if (bondResponse is BadRequestObjectResult badBond)
+                return BadRequest(badBond.Value?.ToString());
+            if (smeResponse is BadRequestObjectResult badSme)
+                return BadRequest(badSme.Value?.ToString());
+            if (atbResponse is BadRequestObjectResult badAtb)
+                return BadRequest(badAtb.Value?.ToString());
+
+            if ((currentPriceResponse as OkObjectResult)?.Value == null &&
+                (bondResponse as OkObjectResult)?.Value == null &&
+                (smeResponse as OkObjectResult)?.Value == null &&
+                (atbResponse as OkObjectResult)?.Value == null)
             {
-                var currentPriceResponse = await GetCseClosePrice() as OkObjectResult;
-                var bondResponse = await GetCseBonds() as OkObjectResult;
-                var smeResponse = await GetCseSMEPrice() as OkObjectResult;
-                var atbResponse = await GetCseATBPrice() as OkObjectResult;
+                return NotFound("No data found from CSE sources.");
+            }
 
-                if (currentPriceResponse == null && bondResponse == null && smeResponse == null && atbResponse == null)
-                    return NotFound("No data found from CSE sources.");
+            var allRows = new List<List<string>>();
+            var headers = new List<string> { "SL", "STOCK CODE", "HIGH", "LOW", "CP" };
+            int sl = 1;
 
-                var allRows = new List<List<string>>();
-                var headers = new List<string> { "SL", "STOCK CODE", "HIGH", "LOW", "CP" };
-                int sl = 1;
+            List<List<string>> FilterColumns(dynamic data)
+            {
+                var filteredRows = new List<List<string>>();
+                var headerList = ((IEnumerable<object>)data.headers)
+                                    .Select(h => h.ToString().Trim().ToUpper())
+                                    .ToList();
 
-                List<List<string>> FilterColumns(dynamic data)
+                int stockCodeIndex = headerList.FindIndex(h => h.Contains("STOCK CODE"));
+                int highIndex = headerList.FindIndex(h => h == "HIGH");
+                int lowIndex = headerList.FindIndex(h => h == "LOW");
+                int cpIndex = headerList.FindIndex(h => h == "CP" || h == "LTP");
+
+                foreach (var rowObj in (IEnumerable<object>)data.rows)
                 {
-                    var filteredRows = new List<List<string>>();
-                    var headerList = ((IEnumerable<object>)data.headers)
-                                        .Select(h => h.ToString().Trim().ToUpper())
-                                        .ToList();
+                    var row = ((IEnumerable<object>)rowObj).Select(r => r.ToString().Trim()).ToList();
+                    if (row.Count == 0) continue;
 
-                    int stockCodeIndex = headerList.FindIndex(h => h.Contains("STOCK CODE"));
-                    int highIndex = headerList.FindIndex(h => h == "HIGH");
-                    int lowIndex = headerList.FindIndex(h => h == "LOW");
-                    int cpIndex = headerList.FindIndex(h => h == "CP" || h == "LTP");
-
-                    foreach (var rowObj in (IEnumerable<object>)data.rows)
+                    var newRow = new List<string>
                     {
-                        var row = ((IEnumerable<object>)rowObj).Select(r => r.ToString().Trim()).ToList();
-                        if (row.Count == 0) continue;
+                        sl.ToString(),
+                        stockCodeIndex >= 0 && stockCodeIndex < row.Count ? row[stockCodeIndex] : "",
+                        highIndex >= 0 && highIndex < row.Count ? row[highIndex] : "",
+                        lowIndex >= 0 && lowIndex < row.Count ? row[lowIndex] : "",
+                        cpIndex >= 0 && cpIndex < row.Count ? row[cpIndex] : ""
+                    };
 
-                        var newRow = new List<string>
-                {
-                    sl.ToString(),
-                    stockCodeIndex >= 0 && stockCodeIndex < row.Count ? row[stockCodeIndex] : "",
-                    highIndex >= 0 && highIndex < row.Count ? row[highIndex] : "",
-                    lowIndex >= 0 && lowIndex < row.Count ? row[lowIndex] : "",
-                    cpIndex >= 0 && cpIndex < row.Count ? row[cpIndex] : ""
-                };
-
-                        filteredRows.Add(newRow);
-                        sl++;
-                    }
-
-                    return filteredRows;
+                    filteredRows.Add(newRow);
+                    sl++;
                 }
 
-                if (currentPriceResponse?.Value != null)
-                {
-                    dynamic data = currentPriceResponse.Value;
-                    allRows.AddRange(FilterColumns(data));
-                }
-
-                if (bondResponse?.Value != null)
-                {
-                    dynamic data = bondResponse.Value;
-                    allRows.AddRange(FilterColumns(data));
-                }
-
-                if (smeResponse?.Value != null)
-                {
-                    dynamic data = smeResponse.Value;
-                    allRows.AddRange(FilterColumns(data));
-                }
-
-                if (atbResponse?.Value != null)
-                {
-                    dynamic data = atbResponse.Value;
-                    allRows.AddRange(FilterColumns(data));
-                }
-
-                if (allRows.Count == 0)
-                    return NotFound("No CSE data found.");
-
-                return Ok(new { headers, rows = allRows });
+                return filteredRows;
             }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { error = ex.Message });
-            }
+
+            if ((currentPriceResponse as OkObjectResult)?.Value != null)
+                allRows.AddRange(FilterColumns((currentPriceResponse as OkObjectResult).Value));
+
+            if ((bondResponse as OkObjectResult)?.Value != null)
+                allRows.AddRange(FilterColumns((bondResponse as OkObjectResult).Value));
+
+            if ((smeResponse as OkObjectResult)?.Value != null)
+                allRows.AddRange(FilterColumns((smeResponse as OkObjectResult).Value));
+
+            if ((atbResponse as OkObjectResult)?.Value != null)
+                allRows.AddRange(FilterColumns((atbResponse as OkObjectResult).Value));
+
+            if (allRows.Count == 0)
+                return NotFound("No CSE data found.");
+
+            return Ok(new { headers, rows = allRows });
         }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
 
 
 
@@ -444,31 +454,37 @@ namespace MarketScraper.Controllers
             }
         }
 
-        [HttpGet("dse-close-price")]
-        public async Task<IActionResult> GetDseClosePrice()
-        {
-            try
-            {
-                var headers = new List<string> { "SL", "TRADING CODE", "HIGH", "LOW", "CLOSEP*" };
-                var mergedRows = new List<List<string>>();
-                int serial = 1;
+[HttpGet("dse-close-price")]
+public async Task<IActionResult> GetDseClosePrice()
+{
+    try
+    {
+        var headers = new List<string> { "SL", "TRADING CODE", "HIGH", "LOW", "CLOSEP*" };
+        var mergedRows = new List<List<string>>();
+        int serial = 1;
 
-                // ----- MAIN MARKET -----
-                serial = await ExtractDseData("https://www.dsebd.org/dse_close_price.php", mergedRows, serial);
+        // ----- MAIN MARKET -----
+        serial = await ExtractDseDataWithChecking("https://www.dsebd.org/dse_close_price.php", mergedRows, serial);
 
-                // ----- SME MARKET -----
-                serial = await ExtractDseData("https://sme.dsebd.org/sme_dse_close_price.php", mergedRows, serial);
+        // ----- SME MARKET -----
+        serial = await ExtractDseDataWithChecking("https://sme.dsebd.org/sme_dse_close_price.php", mergedRows, serial);
 
-                 // ATB MARKET
-                 serial = await ExtractDseData("https://atb.dsebd.org/atb_close_price.php", mergedRows, serial);
+        // ----- ATB MARKET -----
+        serial = await ExtractDseDataWithChecking("https://atb.dsebd.org/atb_close_price.php", mergedRows, serial);
 
-                return Ok(new { headers, rows = mergedRows });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { error = ex.Message });
-            }
-        }
+        return Ok(new { headers, rows = mergedRows });
+    }
+    catch (DateMismatchException ex)
+    {
+        // Return 400 BadRequest for date mismatch
+        return BadRequest(ex.Message);
+    }
+    catch (Exception ex)
+    {
+        // Other errors -> 500
+        return StatusCode(500, new { error = ex.Message });
+    }
+}
 
 
         [HttpGet("dse-close-price-codes")]
@@ -522,6 +538,23 @@ namespace MarketScraper.Controllers
             var doc = new HtmlAgilityPack.HtmlDocument();
             doc.LoadHtml(html);
 
+             var dateInputNode = doc.DocumentNode.SelectSingleNode("//input[@type='date' and @name='date1']");
+            if (dateInputNode == null)
+                throw new Exception("Could not find DSE page date input.");
+
+            string pageDateStr = dateInputNode.GetAttributeValue("value", "");
+            if (string.IsNullOrWhiteSpace(pageDateStr))
+                throw new Exception("DSE page date value is empty.");
+
+            if (!DateTime.TryParse(pageDateStr, out DateTime pageDate))
+                throw new Exception($"Invalid DSE page date format: {pageDateStr}");
+
+            DateTime today = DateTime.Today;
+
+            // STRICT CHECK: page date must be today
+            if (pageDate.Date != today.Date)
+                throw new Exception($"DSE data not updated yet. Page date = {pageDate:yyyy-MM-dd}, System date = {today:yyyy-MM-dd}");
+
             // Select the 2nd table
             var tables = doc.DocumentNode.SelectNodes("//table[contains(@class,'shares-table')]");
             if (tables == null || tables.Count < 2)
@@ -571,6 +604,113 @@ namespace MarketScraper.Controllers
             return serial;
         }
 
+
+        private async Task<int> ExtractDseDataWithChecking(string url, List<List<string>> rows, int startingSerial)
+        {
+            var response = await _httpClient.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+
+            var html = await response.Content.ReadAsStringAsync();
+            var doc = new HtmlAgilityPack.HtmlDocument();
+            doc.LoadHtml(html);
+
+            // ---------- READ DATE ----------
+            // Get the H2 node
+            var headerNode = doc.DocumentNode.SelectSingleNode("//h2[contains(@class,'BodyHead')]");
+
+            if (headerNode == null)
+                throw new Exception("Could not find DSE close price header.");
+
+            string headerText = headerNode.InnerText.Trim();
+            // Example: "DSE Close Price of Feb 25, 2026"
+
+            // Extract the date part after "of"
+            var match = System.Text.RegularExpressions.Regex.Match(
+                headerText,
+                @"of\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})"
+            );
+
+            if (!match.Success)
+                throw new Exception("Could not extract date from DSE header text: " + headerText);
+
+            string pageDateStr = match.Groups[1].Value;
+
+            // Parse using exact format (safer)
+            if (!DateTime.TryParseExact(
+                    pageDateStr,
+                    "MMM d, yyyy",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None,
+                    out DateTime pageDate))
+            {
+                // also try full month name like "February 25, 2026"
+                if (!DateTime.TryParseExact(
+                        pageDateStr,
+                        "MMMM d, yyyy",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None,
+                        out pageDate))
+                {
+                    throw new Exception($"Invalid DSE page date format: {pageDateStr}");
+                }
+            }
+
+            DateTime today = DateTime.Today;
+            // STRICT CHECK
+            if (pageDate.Date != today.Date)
+                throw new DateMismatchException(
+                    $"DSE data not updated yet. Page date = {pageDate:yyyy-MM-dd}, System date = {today:yyyy-MM-dd}"
+                );
+
+            // ---------- PROCESS TABLE ----------
+            var tables = doc.DocumentNode.SelectNodes("//table[contains(@class,'shares-table')]");
+            if (tables == null || tables.Count < 2)
+                return startingSerial;
+
+            var table = tables[1];
+
+            // Extract header row
+            var headerRow = table.SelectSingleNode(".//tr");
+            var headerColumns = headerRow.SelectNodes("th|td")
+                                        .Select(h => h.InnerText.Trim().ToUpper())
+                                        .ToList();
+
+            // Extract column indexes
+            int tradingCodeIndex = headerColumns.FindIndex(h => h.Contains("TRADING"));
+            int closeIndex = headerColumns.FindIndex(h => h.Contains("CLOSEP"));
+
+            if (tradingCodeIndex < 0) tradingCodeIndex = 1;
+            if (closeIndex < 0) closeIndex = 2;
+
+            // Extract table rows
+            var trNodes = table.SelectNodes(".//tr").Skip(1);
+            if (trNodes == null) return startingSerial;
+
+            int serial = startingSerial;
+            foreach (var tr in trNodes)
+            {
+                var tds = tr.SelectNodes("td");
+                if (tds == null || tds.Count == 0)
+                    continue;
+
+                string tradingCode = tds[tradingCodeIndex].InnerText.Trim();
+                string closep = tds[closeIndex].InnerText.Trim().Replace(",", "");
+
+                rows.Add(new List<string>
+                {
+                    serial.ToString(),
+                    tradingCode,
+                    "0", // HIGH
+                    "0", // LOW
+                    closep
+                });
+
+                serial++;
+            }
+
+            return serial;
+        }
+
         [HttpGet("cse-close-price")]
         public async Task<IActionResult> GetCseClosePrice()
         {
@@ -584,6 +724,25 @@ namespace MarketScraper.Controllers
                 var html = await response.Content.ReadAsStringAsync();
                 var doc = new HtmlAgilityPack.HtmlDocument();
                 doc.LoadHtml(html);
+
+                var toDateNode = doc.DocumentNode.SelectSingleNode("//input[@id='to_date']");
+                string pageDateStr = toDateNode?.GetAttributeValue("value", "");
+
+                if (string.IsNullOrWhiteSpace(pageDateStr))
+                    return BadRequest("Could not read CSE page date");
+
+                if (!DateTime.TryParse(pageDateStr, out DateTime pageDate))
+                    return BadRequest($"Invalid CSE page date format: {pageDateStr}");
+
+                DateTime todayDate = DateTime.Today;
+
+                // STRICT CHECK -> must be today
+                if (pageDate.Date != todayDate.Date)
+                {
+                    return BadRequest(
+                        $"CSE data not updated yet. Page date = {pageDate:yyyy-MM-dd}, System date = {todayDate:yyyy-MM-dd}"
+                    );
+                }
 
                 var rows = new List<List<string>>();
                 var headers = new List<string> { "SL", "STOCK CODE", "HIGH", "LOW", "CP" };
